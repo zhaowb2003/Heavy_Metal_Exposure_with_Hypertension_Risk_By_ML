@@ -1,0 +1,1149 @@
+# ML RMD in 20240908
+
+## 目录
+
+1.  重绘ROC-AUC图，保存为.svg
+2.  十折
+3.  pdp2D 重绘（排除异常点）
+4.  shap图绘制（代码过夜）// 可能要用Rscript
+
+## 导入
+
+```{r}
+library(parsnip)
+library(tidyverse)
+library(tidymodels)
+library(vip)
+library(parsnip)
+library(dplyr)
+library(ggisoband)
+library(DALEXtra)
+library(kernelshap)
+library(shapviz)
+library(kknn)
+library(LiblineaR)
+library(xgboost)
+library(ranger)
+library(dbarts)
+library(discrim)
+library(earth)
+library(patchwork)
+library(ggpubr)
+library(doParallel)
+library(dplyr)
+tidymodels_prefer()
+```
+
+## 重绘ROC-AUC图
+
+### 数据生成
+
+```{r}
+getROC <- function(model,model_string,train_data_ = train_data){
+  pred_ <-select(train_data_, HeightPressureIS) %>% 
+  bind_cols(predict(model, train_data_, type = "prob")) %>% 
+  bind_cols(predict(model, train_data_)) %>% roc_curve(HeightPressureIS, .pred_yes) %>% mutate(model = model_string)
+  return(pred_)
+}
+
+getAUC <- function(model,model_string,train_data_ = train_data){
+  AUC_ <- train_data_ %>% select(HeightPressureIS) %>% 
+  bind_cols(predict(model, train_data_, type = "prob")) %>% 
+  bind_cols(predict(model, train_data_,type = "class")) %>% roc_auc(HeightPressureIS, .pred_yes) %>% mutate(model = model_string)
+  return(AUC_)
+}
+
+roc_lm <- pred_lm %>% roc_curve(HeightPressureIS, .pred_yes) %>% 
+  mutate(model = "GLM")
+AUC_lm <- pred_lm %>% roc_auc(HeightPressureIS, .pred_yes)
+
+roc_knn <- pred_knn %>% roc_curve(HeightPressureIS, .pred_yes) %>% 
+  mutate(model = "kknn")
+AUC_knn <- pred_knn %>% roc_auc(HeightPressureIS, .pred_yes)
+
+roc_rf <- pred_rf %>% roc_curve(HeightPressureIS, .pred_yes) %>% 
+  mutate(model = "randomforest")
+AUC_rf <- pred_rf %>% roc_auc(HeightPressureIS, .pred_yes)
+
+roc_tree <- pred_tree %>% roc_curve(HeightPressureIS, .pred_yes) %>% 
+  mutate(model = "decision tree")
+AUC_tree <- pred_tree %>% roc_auc(HeightPressureIS, .pred_yes)
+
+roc_xgboost <- pred_xgboost %>% roc_curve(HeightPressureIS, .pred_yes) %>% 
+  mutate(model = "xgboost")
+AUC_xgboost <- pred_xgboost %>% roc_auc(HeightPressureIS, .pred_yes)
+
+roc_svm_linear <- pred_svmL %>% roc_curve(HeightPressureIS, .pred_yes) %>% 
+  mutate(model = "svm linear")
+AUC_svmL <- pred_svmL %>% roc_auc(HeightPressureIS, .pred_yes)
+
+roc_BART <- pred_BART %>% roc_curve(HeightPressureIS, .pred_yes) %>% 
+  mutate(model = "BART")
+AUC_BART <- pred_BART %>% roc_auc(HeightPressureIS, .pred_yes)
+
+roc_bayes <- pred_Bayes %>% roc_curve(HeightPressureIS, .pred_yes) %>% 
+  mutate(model = "naive bayes")
+AUC_Bayes <- pred_Bayes %>% roc_auc(HeightPressureIS, .pred_yes)
+
+roc_MARS <- pred_mars %>% roc_curve(HeightPressureIS, .pred_yes) %>% 
+  mutate(model = "MARS")
+AUC_MARS <- pred_mars %>% roc_auc(HeightPressureIS, .pred_yes)
+
+plotROC_AUCs <- function(roc__,colorS,AUC_,str_,getROC_,getAUC_,colorS2) {
+  # roc__ = mutate(roc__,color = colorS)
+  rocs1 <- #bind_rows(roc__) %>% 
+  #ggplot(roc__,aes(x = 1 - specificity, y = sensitivity))+
+  ggplot()+
+  geom_path(data = roc__ ,aes(x = 1 - specificity, y=sensitivity), lwd = 1.2, alpha = 0.6, color = colorS)+
+  geom_abline(lty = 3)+
+  
+    
+  geom_path(data = getROC_,aes(x = 1 - specificity, y = sensitivity), lwd = 1.2, alpha = 0.6, color = colorS2)+
+  scale_colour_manual(labels = c("test"),values =c(colorS))+
+  coord_fixed()+
+  theme_minimal()+
+  ggtitle(str_) +
+  # ggtext()
+  annotate(geom="text", label = "AUC", size = 3, x = 0.365 , y = 0.2,colour="black", hjust = 0)+
+  annotate(geom="text", label = paste0("Train Set: ", as.character(round(getAUC_$.estimate, 4))), size = 3, x = 0.365 , y = 0.12,colour=colorS2, hjust = 0)+
+  annotate(geom="text", label = paste0("Test Set: ", as.character(round(AUC_$.estimate, 4))), size = 3, x = 0.365 , y = 0.04,colour=colorS, hjust = 0)
+  return(rocs1)
+}
+```
+
+### 绘图
+
+```{r}
+pred_rfs_t <- train_data %>% select(HeightPressureIS) %>% bind_cols(predict(fit_rf, train_data, type = "prob")) %>% bind_cols(predict(fit_rf, train_data, type = "class"))
+
+roc_rf_t <- pred_rfs_t %>% roc_curve(HeightPressureIS, .pred_yes) %>% 
+  mutate(model = "randomforest")
+AUC_rf_t <- pred_rfs_t %>% roc_auc(HeightPressureIS, .pred_yes)
+# 记得改变训练集名称
+p_xgb_t <- train_dataNum %>% select(HeightPressureIS) %>% bind_cols(predict(fit_xgboost, train_dataNum, type = "prob")) %>% bind_cols(predict(fit_xgboost, train_dataNum, type = "class"))
+roc_xgboost_t <- p_xgb_t %>% roc_curve(HeightPressureIS, .pred_yes) %>% 
+  mutate(model = "xgboost")
+AUC_xgboost_t <- p_xgb_t %>% roc_auc(HeightPressureIS, .pred_yes)
+
+pred_svmL_t <- train_dataNum %>% select(HeightPressureIS) %>% bind_cols(predict(fit_svmL, train_dataNum, type = "prob")) %>% bind_cols(predict(fit_svmL, train_dataNum, type = "class"))
+roc_svm_linear_t <- pred_svmL_t %>% roc_curve(HeightPressureIS, .pred_yes) %>% 
+  mutate(model = "svm linear")
+AUC_svmL_t <- pred_svmL_t %>% roc_auc(HeightPressureIS, .pred_yes)
+
+
+rocplot1 <- plotROC_AUCs(roc_lm,"#D32F2F", AUC_lm, "A: LM", getROC(fit_lm,"GLM"), getAUC(fit_lm,"GLM"),"blue")
+
+rocplot2 <- plotROC_AUCs(roc_knn,"#D32F2F", AUC_knn,"B: KNN",getROC(fit_knn,"kknn"), getAUC(fit_knn,"kknn"),"blue")
+
+rocplot3 <- plotROC_AUCs(roc_rf,"#D32F2F", AUC_rf, "C: RF",roc_rf_t, AUC_rf_t,"blue")
+
+rocplot4 <- plotROC_AUCs(roc_tree,"#D32F2F",AUC_tree, "D: DT",getROC(fit_tree,"decision tree"), getAUC(fit_tree,"decision tree"),"blue")
+
+rocplot5 <- plotROC_AUCs(roc_xgboost,"#D32F2F", AUC_xgboost, "E: XGBoost",roc_xgboost_t,AUC_xgboost_t ,"blue")
+
+rocplot6 <- plotROC_AUCs(roc_svm_linear,"#D32F2F", AUC_svmL, "F: svmL",roc_svm_linear_t, AUC_svmL_t,"blue")
+
+rocplot7 <- plotROC_AUCs(roc_BART,"#D32F2F", AUC_BART, "G: BART",getROC(fit_BART,"BART"), getAUC(fit_BART,"BART"),"blue")
+
+suppressWarnings(rocplot8 <- plotROC_AUCs(roc_bayes,"#D32F2F", AUC_Bayes, "H: NB",getROC(fit_Bayes,"naive bayes"), getAUC(fit_Bayes,"naive bayes"),"blue"))
+
+rocplot9 <- plotROC_AUCs(roc_MARS,"#D32F2F", AUC_MARS, "I: MARS",getROC(fit_mars,"MARS"), getAUC(fit_mars,"MARS"),"blue")
+
+rocAll <-rocplot1+rocplot2+rocplot3+rocplot4+rocplot5+rocplot6+rocplot7+rocplot8+rocplot9
+
+ggsave(filename = "ROC_AUC.svg", plot = rocAll)
+```
+
+```{r}
+rocAll
+```
+
+
+## 十折
+
+```{r}
+folds <- vfold_cv(train_data, v = 10)
+folds
+
+keep_pred <- control_resamples(save_pred = T, verbose = T)
+
+set.seed(20220520)
+
+
+cl <- makePSOCKcluster(12) # 加速，用12个线程
+registerDoParallel(cl)
+
+rf_res <- fit_resamples(rf_wflow, resamples = folds, control = keep_pred)
+
+stopCluster(cl)
+
+saveRDS(rf_res,file = "datasets/rf_res.rds")
+
+res_calib_plot <- collect_predictions(rf_res) %>% 
+  mutate(
+    pass = if_else(HeightPressureIS == "yes", 1, 0),
+    pred_rnd = round(.pred_yes, 2)
+    ) %>% 
+  group_by(pred_rnd) %>%
+  dplyr::summarize(
+    mean_pred = mean(.pred_yes),
+    mean_obs = mean(pass),
+    n = n()
+    ) %>% 
+  ggplot(aes(x = mean_pred, y = mean_obs)) +
+  geom_abline(linetype = "dashed") +
+  geom_point(aes(size = n), alpha = 0.5) +
+  theme_minimal() +
+  labs(
+    x = "Predicted Pass", 
+    y = "Observed Pass"
+    ) +
+  coord_cartesian(
+    xlim = c(0,1), ylim = c(0, 1)
+    )
+
+res_calib_plot
+
+rf_last_fit <- last_fit(rf_wflow, split_pbp)
+saveRDS(rf_last_fit,file = "./datasets/rf_last_fit.rds")
+
+rf_test_res <- rf_last_fit %>% 
+  collect_metrics()
+rf_test_res
+
+metricsets <- metric_set(accuracy, mcc, f_meas, j_index)
+
+collect_predictions(rf_last_fit) %>% 
+  metricsets(truth = HeightPressureIS, estimate = .pred_class)
+
+
+```
+
+## pdp2D 重绘
+
+```{r}
+
+# quantile(
+var1_vals2 <- seq(from = min(testNew2$u_Pb_208),
+    to = quantile(testNew2$u_Pb_208,0.9),
+    by = (quantile(testNew2$u_Pb_208,0.9) - 
+        min(testNew2$u_Pb_208))/19)
+
+var2_vals2 <- seq(from = min(train_dataNumTarget$s_Se_78),
+    to = quantile(train_dataNumTarget$s_Se_78,0.9),
+    by = (quantile(train_dataNumTarget$s_Se_78,0.9) - 
+        min(train_dataNumTarget$s_Se_78))/19)
+
+two_vals2 <- expand.grid(var1_vals2, var2_vals2)
+two_vals2 <- arrange(two_vals2, Var1, Var2)
+
+two_rep2 <- testNew2[rep(1:nrow(testNew2), nrow(two_vals2)), ]
+two_rep2$u_Pb_208 <- rep(two_vals2$Var1, each = nrow(testNew2))
+two_rep2$s_Se_78 <- rep(two_vals2$Var2, each = nrow(testNew2))
+
+pdpPred_rf =  two_rep2 %>% select(HeightPressureIS) %>% bind_cols(predict(fit_rf2, two_rep2, type = "prob")) %>% bind_cols(predict(fit_rf2, two_rep2, type = "class"))
+
+two_rep2$pred =  pdpPred_rf$.pred_yes
+
+two_agg2 <- group_by(two_rep2, u_Pb_208, s_Se_78) %>% 
+    summarise(mean_pred = mean(na.omit(pred)))
+
+two_agg2
+
+z <- matrix(two_agg2$mean_pred, nrow = length(var1_vals2), byrow = TRUE)
+
+volcano3d <- reshape2::melt(z)
+names(volcano3d) <- c("u_Pb_208", "s_Se_78", "z")
+
+# 可视化2
+volcano3d <- reshape2::melt(z)
+breaks <- c(0, 5, 10, 15, 20)
+labels <- c("0", "10", "20", "30", "40")
+
+x_max = round(quantile(var1_vals2,0.9),4)
+x_min = round(min(var1_vals2),4)
+x_1_4 = (x_max-x_min)/4 + x_min
+x_middle = (x_max-x_min)/2 + x_min
+x_3_4 = (x_max-x_min)*3/4 + x_min
+
+y_max = round(quantile(var2_vals2,0.9),4)
+y_min = round(min(var2_vals2),4)
+y_1_4 = (y_max-y_min)/4 + y_min
+y_middle = (y_max-y_min)/2 + y_min
+y_3_4 = (y_max-y_min)*3/4 + y_min
+
+# var2_vals2
+
+label_x_s =  c(as.character(x_min),as.character(x_1_4),as.character(x_middle),as.character(x_3_4),as.character(x_max))
+
+label_y_s =  c(as.character(y_min),as.character(y_1_4),as.character(y_middle),as.character(y_3_4),as.character(y_max))
+
+names(volcano3d) <- c("u_Pb_208", "s_Se_78", "z")
+  # 可视化2
+# 可视化2
+ggplot(volcano3d, aes(u_Pb_208, s_Se_78, z = z)) +
+    geom_isobands(aes(fill = stat(zmin)),color = NA) +
+    scale_fill_gradient(low = "#ffea3c", high = "#a52c6f")+
+    scale_x_continuous(breaks = breaks, labels = label_x_s) +
+    scale_y_continuous(breaks = breaks, labels = label_y_s) +
+    coord_fixed()+
+    theme_bw()+
+    theme(panel.grid.major =element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(), 
+        panel.border = element_blank())+ 
+    theme(plot.background=element_blank(),panel.grid=element_blank(),panel.background=element_blank(),panel.border=element_rect(color="black",linewidth=0.5,fill=NA),axis.line=element_blank(),axis.ticks=element_line(color="black",linewidth=0.5),axis.text=element_text(color="black",size=7),axis.title=element_text(color="black",size=7),plot.title=element_text(color="black",size=7),legend.background=element_blank(),legend.key=element_blank(),legend.text=element_text(color="black",size=7),legend.title=element_text(color="black",size=7))
+ggsave("./result/pdp2D/pdp2D_u_Pb_208_s_Se_78.svg", width = 14,height = 14)
+
+
+
+
+# quantile(
+var1_vals2 <- seq(from = min(testNew2$u_Fe_56),
+    to = quantile(testNew2$u_Fe_56,0.9),
+    by = (quantile(testNew2$u_Fe_56,0.9) - 
+        min(testNew2$u_Fe_56))/19)
+
+var2_vals2 <- seq(from = min(train_dataNumTarget$s_Se_78),
+    to = quantile(train_dataNumTarget$s_Se_78,0.9),
+    by = (quantile(train_dataNumTarget$s_Se_78,0.9) - 
+        min(train_dataNumTarget$s_Se_78))/19)
+
+two_vals2 <- expand.grid(var1_vals2, var2_vals2)
+two_vals2 <- arrange(two_vals2, Var1, Var2)
+
+two_rep2 <- testNew2[rep(1:nrow(testNew2), nrow(two_vals2)), ]
+two_rep2$u_Fe_56 <- rep(two_vals2$Var1, each = nrow(testNew2))
+two_rep2$s_Se_78 <- rep(two_vals2$Var2, each = nrow(testNew2))
+
+pdpPred_rf =  two_rep2 %>% select(HeightPressureIS) %>% bind_cols(predict(fit_rf2, two_rep2, type = "prob")) %>% bind_cols(predict(fit_rf2, two_rep2, type = "class"))
+
+two_rep2$pred =  pdpPred_rf$.pred_yes
+
+two_agg2 <- group_by(two_rep2, u_Fe_56, s_Se_78) %>% 
+    summarise(mean_pred = mean(na.omit(pred)))
+
+two_agg2
+
+z <- matrix(two_agg2$mean_pred, nrow = length(var1_vals2), byrow = TRUE)
+
+volcano3d <- reshape2::melt(z)
+names(volcano3d) <- c("u_Fe_56", "s_Se_78", "z")
+
+# 可视化2
+volcano3d <- reshape2::melt(z)
+breaks <- c(0, 5, 10, 15, 20)
+labels <- c("0", "10", "20", "30", "40")
+
+x_max = round(quantile(var1_vals2,0.9),4)
+x_min = round(min(var1_vals2),4)
+x_1_4 = (x_max-x_min)/4 + x_min
+x_middle = (x_max-x_min)/2 + x_min
+x_3_4 = (x_max-x_min)*3/4 + x_min
+
+y_max = round(quantile(var2_vals2,0.9),4)
+y_min = round(min(var2_vals2),4)
+y_1_4 = (y_max-y_min)/4 + y_min
+y_middle = (y_max-y_min)/2 + y_min
+y_3_4 = (y_max-y_min)*3/4 + y_min
+
+# var2_vals2
+
+label_x_s =  c(as.character(x_min),as.character(x_1_4),as.character(x_middle),as.character(x_3_4),as.character(x_max))
+
+label_y_s =  c(as.character(y_min),as.character(y_1_4),as.character(y_middle),as.character(y_3_4),as.character(y_max))
+
+names(volcano3d) <- c("u_Fe_56", "s_Se_78", "z")
+  # 可视化2
+# 可视化2
+ggplot(volcano3d, aes(u_Fe_56, s_Se_78, z = z)) +
+    geom_isobands(aes(fill = stat(zmin)),color = NA) +
+    scale_fill_gradient(low = "#ffea3c", high = "#a52c6f")+
+    scale_x_continuous(breaks = breaks, labels = label_x_s) +
+    scale_y_continuous(breaks = breaks, labels = label_y_s) +
+    coord_fixed()+
+    theme_bw()+
+    theme(panel.grid.major =element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(), 
+        panel.border = element_blank())+ 
+    theme(plot.background=element_blank(),panel.grid=element_blank(),panel.background=element_blank(),panel.border=element_rect(color="black",linewidth=0.5,fill=NA),axis.line=element_blank(),axis.ticks=element_line(color="black",linewidth=0.5),axis.text=element_text(color="black",size=7),axis.title=element_text(color="black",size=7),plot.title=element_text(color="black",size=7),legend.background=element_blank(),legend.key=element_blank(),legend.text=element_text(color="black",size=7),legend.title=element_text(color="black",size=7))
+ggsave("./result/pdp2D/pdp2D_u_Fe_56_s_Se_78.svg", width = 14,height = 14)
+
+
+
+
+# quantile(
+var1_vals2 <- seq(from = min(testNew2$u_Rb_85),
+    to = quantile(testNew2$u_Rb_85,0.9),
+    by = (quantile(testNew2$u_Rb_85,0.9) - 
+        min(testNew2$u_Rb_85))/19)
+
+var2_vals2 <- seq(from = min(train_dataNumTarget$s_Se_78),
+    to = quantile(train_dataNumTarget$s_Se_78,0.9),
+    by = (quantile(train_dataNumTarget$s_Se_78,0.9) - 
+        min(train_dataNumTarget$s_Se_78))/19)
+
+two_vals2 <- expand.grid(var1_vals2, var2_vals2)
+two_vals2 <- arrange(two_vals2, Var1, Var2)
+
+two_rep2 <- testNew2[rep(1:nrow(testNew2), nrow(two_vals2)), ]
+two_rep2$u_Rb_85 <- rep(two_vals2$Var1, each = nrow(testNew2))
+two_rep2$s_Se_78 <- rep(two_vals2$Var2, each = nrow(testNew2))
+
+pdpPred_rf =  two_rep2 %>% select(HeightPressureIS) %>% bind_cols(predict(fit_rf2, two_rep2, type = "prob")) %>% bind_cols(predict(fit_rf2, two_rep2, type = "class"))
+
+two_rep2$pred =  pdpPred_rf$.pred_yes
+
+two_agg2 <- group_by(two_rep2, u_Rb_85, s_Se_78) %>% 
+    summarise(mean_pred = mean(na.omit(pred)))
+
+two_agg2
+
+z <- matrix(two_agg2$mean_pred, nrow = length(var1_vals2), byrow = TRUE)
+
+volcano3d <- reshape2::melt(z)
+names(volcano3d) <- c("u_Rb_85", "s_Se_78", "z")
+
+# 可视化2
+volcano3d <- reshape2::melt(z)
+breaks <- c(0, 5, 10, 15, 20)
+labels <- c("0", "10", "20", "30", "40")
+
+x_max = round(quantile(var1_vals2,0.9),4)
+x_min = round(min(var1_vals2),4)
+x_1_4 = (x_max-x_min)/4 + x_min
+x_middle = (x_max-x_min)/2 + x_min
+x_3_4 = (x_max-x_min)*3/4 + x_min
+
+y_max = round(quantile(var2_vals2,0.9),4)
+y_min = round(min(var2_vals2),4)
+y_1_4 = (y_max-y_min)/4 + y_min
+y_middle = (y_max-y_min)/2 + y_min
+y_3_4 = (y_max-y_min)*3/4 + y_min
+
+# var2_vals2
+
+label_x_s =  c(as.character(x_min),as.character(x_1_4),as.character(x_middle),as.character(x_3_4),as.character(x_max))
+
+label_y_s =  c(as.character(y_min),as.character(y_1_4),as.character(y_middle),as.character(y_3_4),as.character(y_max))
+
+names(volcano3d) <- c("u_Rb_85", "s_Se_78", "z")
+  # 可视化2
+# 可视化2
+ggplot(volcano3d, aes(u_Rb_85, s_Se_78, z = z)) +
+    geom_isobands(aes(fill = stat(zmin)),color = NA) +
+    scale_fill_gradient(low = "#ffea3c", high = "#a52c6f")+
+    scale_x_continuous(breaks = breaks, labels = label_x_s) +
+    scale_y_continuous(breaks = breaks, labels = label_y_s) +
+    coord_fixed()+
+    theme_bw()+
+    theme(panel.grid.major =element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(), 
+        panel.border = element_blank())+ 
+    theme(plot.background=element_blank(),panel.grid=element_blank(),panel.background=element_blank(),panel.border=element_rect(color="black",linewidth=0.5,fill=NA),axis.line=element_blank(),axis.ticks=element_line(color="black",linewidth=0.5),axis.text=element_text(color="black",size=7),axis.title=element_text(color="black",size=7),plot.title=element_text(color="black",size=7),legend.background=element_blank(),legend.key=element_blank(),legend.text=element_text(color="black",size=7),legend.title=element_text(color="black",size=7))
+ggsave("./result/pdp2D/pdp2D_u_Rb_85_s_Se_78.svg", width = 14,height = 14)
+
+
+
+
+# quantile(
+var1_vals2 <- seq(from = min(testNew2$s_As_75),
+    to = quantile(testNew2$s_As_75,0.9),
+    by = (quantile(testNew2$s_As_75,0.9) - 
+        min(testNew2$s_As_75))/19)
+
+var2_vals2 <- seq(from = min(train_dataNumTarget$s_Se_78),
+    to = quantile(train_dataNumTarget$s_Se_78,0.9),
+    by = (quantile(train_dataNumTarget$s_Se_78,0.9) - 
+        min(train_dataNumTarget$s_Se_78))/19)
+
+two_vals2 <- expand.grid(var1_vals2, var2_vals2)
+two_vals2 <- arrange(two_vals2, Var1, Var2)
+
+two_rep2 <- testNew2[rep(1:nrow(testNew2), nrow(two_vals2)), ]
+two_rep2$s_As_75 <- rep(two_vals2$Var1, each = nrow(testNew2))
+two_rep2$s_Se_78 <- rep(two_vals2$Var2, each = nrow(testNew2))
+
+pdpPred_rf =  two_rep2 %>% select(HeightPressureIS) %>% bind_cols(predict(fit_rf2, two_rep2, type = "prob")) %>% bind_cols(predict(fit_rf2, two_rep2, type = "class"))
+
+two_rep2$pred =  pdpPred_rf$.pred_yes
+
+two_agg2 <- group_by(two_rep2, s_As_75, s_Se_78) %>% 
+    summarise(mean_pred = mean(na.omit(pred)))
+
+two_agg2
+
+z <- matrix(two_agg2$mean_pred, nrow = length(var1_vals2), byrow = TRUE)
+
+volcano3d <- reshape2::melt(z)
+names(volcano3d) <- c("s_As_75", "s_Se_78", "z")
+
+# 可视化2
+volcano3d <- reshape2::melt(z)
+breaks <- c(0, 5, 10, 15, 20)
+labels <- c("0", "10", "20", "30", "40")
+
+x_max = round(quantile(var1_vals2,0.9),4)
+x_min = round(min(var1_vals2),4)
+x_1_4 = (x_max-x_min)/4 + x_min
+x_middle = (x_max-x_min)/2 + x_min
+x_3_4 = (x_max-x_min)*3/4 + x_min
+
+y_max = round(quantile(var2_vals2,0.9),4)
+y_min = round(min(var2_vals2),4)
+y_1_4 = (y_max-y_min)/4 + y_min
+y_middle = (y_max-y_min)/2 + y_min
+y_3_4 = (y_max-y_min)*3/4 + y_min
+
+# var2_vals2
+
+label_x_s =  c(as.character(x_min),as.character(x_1_4),as.character(x_middle),as.character(x_3_4),as.character(x_max))
+
+label_y_s =  c(as.character(y_min),as.character(y_1_4),as.character(y_middle),as.character(y_3_4),as.character(y_max))
+
+names(volcano3d) <- c("s_As_75", "s_Se_78", "z")
+  # 可视化2
+# 可视化2
+ggplot(volcano3d, aes(s_As_75, s_Se_78, z = z)) +
+    geom_isobands(aes(fill = stat(zmin)),color = NA) +
+    scale_fill_gradient(low = "#ffea3c", high = "#a52c6f")+
+    scale_x_continuous(breaks = breaks, labels = label_x_s) +
+    scale_y_continuous(breaks = breaks, labels = label_y_s) +
+    coord_fixed()+
+    theme_bw()+
+    theme(panel.grid.major =element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(), 
+        panel.border = element_blank())+ 
+    theme(plot.background=element_blank(),panel.grid=element_blank(),panel.background=element_blank(),panel.border=element_rect(color="black",linewidth=0.5,fill=NA),axis.line=element_blank(),axis.ticks=element_line(color="black",linewidth=0.5),axis.text=element_text(color="black",size=7),axis.title=element_text(color="black",size=7),plot.title=element_text(color="black",size=7),legend.background=element_blank(),legend.key=element_blank(),legend.text=element_text(color="black",size=7),legend.title=element_text(color="black",size=7))
+ggsave("./result/pdp2D/pdp2D_s_As_75_s_Se_78.svg", width = 14,height = 14)
+
+
+
+
+# quantile(
+var1_vals2 <- seq(from = min(testNew2$u_V_51),
+    to = quantile(testNew2$u_V_51,0.9),
+    by = (quantile(testNew2$u_V_51,0.9) - 
+        min(testNew2$u_V_51))/19)
+
+var2_vals2 <- seq(from = min(train_dataNumTarget$s_Se_78),
+    to = quantile(train_dataNumTarget$s_Se_78,0.9),
+    by = (quantile(train_dataNumTarget$s_Se_78,0.9) - 
+        min(train_dataNumTarget$s_Se_78))/19)
+
+two_vals2 <- expand.grid(var1_vals2, var2_vals2)
+two_vals2 <- arrange(two_vals2, Var1, Var2)
+
+two_rep2 <- testNew2[rep(1:nrow(testNew2), nrow(two_vals2)), ]
+two_rep2$u_V_51 <- rep(two_vals2$Var1, each = nrow(testNew2))
+two_rep2$s_Se_78 <- rep(two_vals2$Var2, each = nrow(testNew2))
+
+pdpPred_rf =  two_rep2 %>% select(HeightPressureIS) %>% bind_cols(predict(fit_rf2, two_rep2, type = "prob")) %>% bind_cols(predict(fit_rf2, two_rep2, type = "class"))
+
+two_rep2$pred =  pdpPred_rf$.pred_yes
+
+two_agg2 <- group_by(two_rep2, u_V_51, s_Se_78) %>% 
+    summarise(mean_pred = mean(na.omit(pred)))
+
+two_agg2
+
+z <- matrix(two_agg2$mean_pred, nrow = length(var1_vals2), byrow = TRUE)
+
+volcano3d <- reshape2::melt(z)
+names(volcano3d) <- c("u_V_51", "s_Se_78", "z")
+
+# 可视化2
+volcano3d <- reshape2::melt(z)
+breaks <- c(0, 5, 10, 15, 20)
+labels <- c("0", "10", "20", "30", "40")
+
+x_max = round(quantile(var1_vals2,0.9),4)
+x_min = round(min(var1_vals2),4)
+x_1_4 = (x_max-x_min)/4 + x_min
+x_middle = (x_max-x_min)/2 + x_min
+x_3_4 = (x_max-x_min)*3/4 + x_min
+
+y_max = round(quantile(var2_vals2,0.9),4)
+y_min = round(min(var2_vals2),4)
+y_1_4 = (y_max-y_min)/4 + y_min
+y_middle = (y_max-y_min)/2 + y_min
+y_3_4 = (y_max-y_min)*3/4 + y_min
+
+# var2_vals2
+
+label_x_s =  c(as.character(x_min),as.character(x_1_4),as.character(x_middle),as.character(x_3_4),as.character(x_max))
+
+label_y_s =  c(as.character(y_min),as.character(y_1_4),as.character(y_middle),as.character(y_3_4),as.character(y_max))
+
+names(volcano3d) <- c("u_V_51", "s_Se_78", "z")
+  # 可视化2
+# 可视化2
+ggplot(volcano3d, aes(u_V_51, s_Se_78, z = z)) +
+    geom_isobands(aes(fill = stat(zmin)),color = NA) +
+    scale_fill_gradient(low = "#ffea3c", high = "#a52c6f")+
+    scale_x_continuous(breaks = breaks, labels = label_x_s) +
+    scale_y_continuous(breaks = breaks, labels = label_y_s) +
+    coord_fixed()+
+    theme_bw()+
+    theme(panel.grid.major =element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(), 
+        panel.border = element_blank())+ 
+    theme(plot.background=element_blank(),panel.grid=element_blank(),panel.background=element_blank(),panel.border=element_rect(color="black",linewidth=0.5,fill=NA),axis.line=element_blank(),axis.ticks=element_line(color="black",linewidth=0.5),axis.text=element_text(color="black",size=7),axis.title=element_text(color="black",size=7),plot.title=element_text(color="black",size=7),legend.background=element_blank(),legend.key=element_blank(),legend.text=element_text(color="black",size=7),legend.title=element_text(color="black",size=7))
+ggsave("./result/pdp2D/pdp2D_u_V_51_s_Se_78.svg", width = 14,height = 14)
+
+
+
+
+# quantile(
+var1_vals2 <- seq(from = min(testNew2$u_Se_78),
+    to = quantile(testNew2$u_Se_78,0.9),
+    by = (quantile(testNew2$u_Se_78,0.9) - 
+        min(testNew2$u_Se_78))/19)
+
+var2_vals2 <- seq(from = min(train_dataNumTarget$s_Se_78),
+    to = quantile(train_dataNumTarget$s_Se_78,0.9),
+    by = (quantile(train_dataNumTarget$s_Se_78,0.9) - 
+        min(train_dataNumTarget$s_Se_78))/19)
+
+two_vals2 <- expand.grid(var1_vals2, var2_vals2)
+two_vals2 <- arrange(two_vals2, Var1, Var2)
+
+two_rep2 <- testNew2[rep(1:nrow(testNew2), nrow(two_vals2)), ]
+two_rep2$u_Se_78 <- rep(two_vals2$Var1, each = nrow(testNew2))
+two_rep2$s_Se_78 <- rep(two_vals2$Var2, each = nrow(testNew2))
+
+pdpPred_rf =  two_rep2 %>% select(HeightPressureIS) %>% bind_cols(predict(fit_rf2, two_rep2, type = "prob")) %>% bind_cols(predict(fit_rf2, two_rep2, type = "class"))
+
+two_rep2$pred =  pdpPred_rf$.pred_yes
+
+two_agg2 <- group_by(two_rep2, u_Se_78, s_Se_78) %>% 
+    summarise(mean_pred = mean(na.omit(pred)))
+
+two_agg2
+
+z <- matrix(two_agg2$mean_pred, nrow = length(var1_vals2), byrow = TRUE)
+
+volcano3d <- reshape2::melt(z)
+names(volcano3d) <- c("u_Se_78", "s_Se_78", "z")
+
+# 可视化2
+volcano3d <- reshape2::melt(z)
+breaks <- c(0, 5, 10, 15, 20)
+labels <- c("0", "10", "20", "30", "40")
+
+x_max = round(quantile(var1_vals2,0.9),4)
+x_min = round(min(var1_vals2),4)
+x_1_4 = (x_max-x_min)/4 + x_min
+x_middle = (x_max-x_min)/2 + x_min
+x_3_4 = (x_max-x_min)*3/4 + x_min
+
+y_max = round(quantile(var2_vals2,0.9),4)
+y_min = round(min(var2_vals2),4)
+y_1_4 = (y_max-y_min)/4 + y_min
+y_middle = (y_max-y_min)/2 + y_min
+y_3_4 = (y_max-y_min)*3/4 + y_min
+
+# var2_vals2
+
+label_x_s =  c(as.character(x_min),as.character(x_1_4),as.character(x_middle),as.character(x_3_4),as.character(x_max))
+
+label_y_s =  c(as.character(y_min),as.character(y_1_4),as.character(y_middle),as.character(y_3_4),as.character(y_max))
+
+names(volcano3d) <- c("u_Se_78", "s_Se_78", "z")
+  # 可视化2
+# 可视化2
+ggplot(volcano3d, aes(u_Se_78, s_Se_78, z = z)) +
+    geom_isobands(aes(fill = stat(zmin)),color = NA) +
+    scale_fill_gradient(low = "#ffea3c", high = "#a52c6f")+
+    scale_x_continuous(breaks = breaks, labels = label_x_s) +
+    scale_y_continuous(breaks = breaks, labels = label_y_s) +
+    coord_fixed()+
+    theme_bw()+
+    theme(panel.grid.major =element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(), 
+        panel.border = element_blank())+ 
+    theme(plot.background=element_blank(),panel.grid=element_blank(),panel.background=element_blank(),panel.border=element_rect(color="black",linewidth=0.5,fill=NA),axis.line=element_blank(),axis.ticks=element_line(color="black",linewidth=0.5),axis.text=element_text(color="black",size=7),axis.title=element_text(color="black",size=7),plot.title=element_text(color="black",size=7),legend.background=element_blank(),legend.key=element_blank(),legend.text=element_text(color="black",size=7),legend.title=element_text(color="black",size=7))
+ggsave("./result/pdp2D/pdp2D_u_Se_78_s_Se_78.svg", width = 14,height = 14)
+
+
+
+
+```
+
+## shap
+
+```{r}
+shap1_772_783 <- kernelshap(fit_rf, train_data[765:790,1:41], bg_X = train_data) %>% shapviz()
+saveRDS(shap,"./shap.rds")
+```
+
+```{r}
+shap1_772_783$yes$X
+shap$yes
+```
+
+```{r}
+shap1_1_6 <- kernelshap(fit_rf, train_data[1:6,1:41], bg_X = train_data) 
+
+shap1_6_11 <- kernelshap(fit_rf, train_data[6:11,1:41], bg_X = train_data)
+```
+
+```{r}
+shap_mix = shap1_1_6 %>% shapviz()
+shap_mix
+shap1_6_11_viz = shap1_6_11 %>% shapviz()
+```
+```{r}
+shap_mix$yes$X = rbind(shap_mix$yes$X, shap1_6_11_viz$yes$X)
+shap_mix$yes$S = rbind(shap_mix$yes$S, shap1_6_11_viz$yes$S)
+
+shap_mix$yes$X = rbind(shap_mix$yes$X, shap1_772_783$yes$X)
+shap_mix$yes$S = rbind(shap_mix$yes$S, shap1_772_783$yes$S)
+```
+
+```{r}
+sv_importance(shap_mix$yes, kind = "beeswarm")
+```
+```{r}
+shap1_1_50 <- kernelshap(fit_rf, train_data[1:50,1:65], bg_X = train_data) %>% shapviz()
+
+
+```
+
+### 分段运行版本
+
+```{r}
+shap_1_to_50 <- kernelshap(fit_rf, train_data[1:50,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_1_to_50,"./shaps/shap_1_to_50.rds")
+shap_mix <- shap_1_to_50
+saveRDS(shap_mix,"./shaps/shap_mix_50.rds")
+
+shap_51_to_100 <- kernelshap(fit_rf, train_data[51:100,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_51_to_100,"./shaps/shap_51_to_100.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_51_to_100$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_51_to_100$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_51_to_100$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_51_to_100$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_101_to_150 <- kernelshap(fit_rf, train_data[101:150,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_101_to_150,"./shaps/shap_101_to_150.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_101_to_150$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_101_to_150$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_101_to_150$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_101_to_150$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_151_to_200 <- kernelshap(fit_rf, train_data[151:200,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_151_to_200,"./shaps/shap_151_to_200.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_151_to_200$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_151_to_200$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_151_to_200$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_151_to_200$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix_200.rds")
+
+
+shap_201_to_250 <- kernelshap(fit_rf, train_data[201:250,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_201_to_250,"./shaps/shap_201_to_250.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_201_to_250$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_201_to_250$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_201_to_250$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_201_to_250$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_251_to_300 <- kernelshap(fit_rf, train_data[251:300,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_251_to_300,"./shaps/shap_251_to_300.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_251_to_300$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_251_to_300$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_251_to_300$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_251_to_300$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_301_to_350 <- kernelshap(fit_rf, train_data[301:350,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_301_to_350,"./shaps/shap_301_to_350.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_301_to_350$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_301_to_350$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_301_to_350$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_301_to_350$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_351_to_400 <- kernelshap(fit_rf, train_data[351:400,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_351_to_400,"./shaps/shap_351_to_400.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_351_to_400$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_351_to_400$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_351_to_400$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_351_to_400$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_401_to_450 <- kernelshap(fit_rf, train_data[401:450,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_401_to_450,"./shaps/shap_401_to_450.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_401_to_450$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_401_to_450$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_401_to_450$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_401_to_450$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_451_to_500 <- kernelshap(fit_rf, train_data[451:500,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_451_to_500,"./shaps/shap_451_to_500.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_451_to_500$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_451_to_500$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_451_to_500$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_451_to_500$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix_500.rds")
+
+
+shap_501_to_550 <- kernelshap(fit_rf, train_data[501:550,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_501_to_550,"./shaps/shap_501_to_550.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_501_to_550$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_501_to_550$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_501_to_550$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_501_to_550$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_551_to_600 <- kernelshap(fit_rf, train_data[551:600,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_551_to_600,"./shaps/shap_551_to_600.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_551_to_600$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_551_to_600$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_551_to_600$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_551_to_600$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_601_to_650 <- kernelshap(fit_rf, train_data[601:650,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_601_to_650,"./shaps/shap_601_to_650.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_601_to_650$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_601_to_650$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_601_to_650$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_601_to_650$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_651_to_700 <- kernelshap(fit_rf, train_data[651:700,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_651_to_700,"./shaps/shap_651_to_700.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_651_to_700$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_651_to_700$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_651_to_700$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_651_to_700$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_701_to_750 <- kernelshap(fit_rf, train_data[701:750,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_701_to_750,"./shaps/shap_701_to_750.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_701_to_750$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_701_to_750$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_701_to_750$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_701_to_750$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix_750.rds")
+
+
+shap_751_to_800 <- kernelshap(fit_rf, train_data[751:800,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_751_to_800,"./shaps/shap_751_to_800.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_751_to_800$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_751_to_800$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_751_to_800$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_751_to_800$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_801_to_850 <- kernelshap(fit_rf, train_data[801:850,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_801_to_850,"./shaps/shap_801_to_850.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_801_to_850$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_801_to_850$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_801_to_850$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_801_to_850$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_851_to_900 <- kernelshap(fit_rf, train_data[851:900,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_851_to_900,"./shaps/shap_851_to_900.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_851_to_900$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_851_to_900$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_851_to_900$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_851_to_900$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_901_to_950 <- kernelshap(fit_rf, train_data[901:950,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_901_to_950,"./shaps/shap_901_to_950.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_901_to_950$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_901_to_950$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_901_to_950$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_901_to_950$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_951_to_1000 <- kernelshap(fit_rf, train_data[951:1000,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_951_to_1000,"./shaps/shap_951_to_1000.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_951_to_1000$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_951_to_1000$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_951_to_1000$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_951_to_1000$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix_1000.rds")
+
+
+shap_1001_to_1050 <- kernelshap(fit_rf, train_data[1001:1050,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_1001_to_1050,"./shaps/shap_1001_to_1050.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_1001_to_1050$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_1001_to_1050$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_1001_to_1050$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_1001_to_1050$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_1051_to_1100 <- kernelshap(fit_rf, train_data[1051:1100,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_1051_to_1100,"./shaps/shap_1051_to_1100.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_1051_to_1100$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_1051_to_1100$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_1051_to_1100$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_1051_to_1100$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_1101_to_1150 <- kernelshap(fit_rf, train_data[1101:1150,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_1101_to_1150,"./shaps/shap_1101_to_1150.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_1101_to_1150$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_1101_to_1150$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_1101_to_1150$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_1101_to_1150$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_1151_to_1200 <- kernelshap(fit_rf, train_data[1151:1200,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_1151_to_1200,"./shaps/shap_1151_to_1200.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_1151_to_1200$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_1151_to_1200$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_1151_to_1200$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_1151_to_1200$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_1201_to_1250 <- kernelshap(fit_rf, train_data[1201:1250,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_1201_to_1250,"./shaps/shap_1201_to_1250.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_1201_to_1250$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_1201_to_1250$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_1201_to_1250$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_1201_to_1250$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_1251_to_1300 <- kernelshap(fit_rf, train_data[1251:1300,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_1251_to_1300,"./shaps/shap_1251_to_1300.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_1251_to_1300$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_1251_to_1300$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_1251_to_1300$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_1251_to_1300$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_1301_to_1350 <- kernelshap(fit_rf, train_data[1301:1350,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_1301_to_1350,"./shaps/shap_1301_to_1350.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_1301_to_1350$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_1301_to_1350$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_1301_to_1350$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_1301_to_1350$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_1351_to_1400 <- kernelshap(fit_rf, train_data[1351:1400,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_1351_to_1400,"./shaps/shap_1351_to_1400.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_1351_to_1400$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_1351_to_1400$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_1351_to_1400$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_1351_to_1400$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_1401_to_1450 <- kernelshap(fit_rf, train_data[1401:1450,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_1401_to_1450,"./shaps/shap_1401_to_1450.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_1401_to_1450$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_1401_to_1450$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_1401_to_1450$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_1401_to_1450$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_1451_to_1500 <- kernelshap(fit_rf, train_data[1451:1500,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_1451_to_1500,"./shaps/shap_1451_to_1500.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_1451_to_1500$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_1451_to_1500$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_1451_to_1500$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_1451_to_1500$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_1501_to_1550 <- kernelshap(fit_rf, train_data[1501:1550,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_1501_to_1550,"./shaps/shap_1501_to_1550.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_1501_to_1550$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_1501_to_1550$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_1501_to_1550$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_1501_to_1550$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_1551_to_1600 <- kernelshap(fit_rf, train_data[1551:1600,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_1551_to_1600,"./shaps/shap_1551_to_1600.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_1551_to_1600$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_1551_to_1600$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_1551_to_1600$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_1551_to_1600$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_1601_to_1650 <- kernelshap(fit_rf, train_data[1601:1650,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_1601_to_1650,"./shaps/shap_1601_to_1650.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_1601_to_1650$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_1601_to_1650$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_1601_to_1650$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_1601_to_1650$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix.rds")
+
+
+shap_1651_to_1700 <- kernelshap(fit_rf, train_data[1651:1700,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_1651_to_1700,"./shaps/shap_1651_to_1700.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_1651_to_1700$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_1651_to_1700$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_1651_to_1700$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_1651_to_1700$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix_1700.rds")
+
+
+shap_1701_to_1750 <- kernelshap(fit_rf, train_data[1701:1750,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_1701_to_1750,"./shaps/shap_1701_to_1750.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_1701_to_1750$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_1701_to_1750$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_1701_to_1750$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_1701_to_1750$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix_1750.rds")
+
+
+shap_1751_to_1800 <- kernelshap(fit_rf, train_data[1751:1800,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_1751_to_1800,"./shaps/shap_1751_to_1800.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_1751_to_1800$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_1751_to_1800$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_1751_to_1800$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_1751_to_1800$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix_1800.rds")
+
+
+shap_1801_to_1850 <- kernelshap(fit_rf, train_data[1801:1850,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_1801_to_1850,"./shaps/shap_1801_to_1850.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_1801_to_1850$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_1801_to_1850$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_1801_to_1850$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_1801_to_1850$no$S)
+saveRDS(shap_mix,"./shaps/shap_mix_1850.rds")
+
+
+shap_1851_to_1581 <- kernelshap(fit_rf, train_data[1851:1581,1:65], bg_X = train_data) %>% shapviz()
+saveRDS(shap_1851_to_1581,"./shaps/shap_1851_to_1581.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_1851_to_1581$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_1851_to_1581$yes$S)
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_1851_to_1581$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_1851_to_1581$no$S)
+
+saveRDS(shap_mix,"./shaps/shap_mix_final.rds")
+
+```
+
+```{r}
+shap_1_to_5 <- kernelshap(fit_rf2, testNew3[1:5,1:65], bg_X = testNew3) %>% shapviz()
+saveRDS(shap_1_to_5,"./shaps/shap_1_to_5.rds")
+shap_mix = shap_1_to_5
+
+shap_6_to_10 <- kernelshap(fit_rf2, testNew3[6:10,1:65], bg_X = testNew3) %>% shapviz()
+saveRDS(shap_6_to_10,"./shaps/shap_6_to_10.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_6_to_10$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_6_to_10$yes$S)
+
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_6_to_10$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_6_to_10$no$S)
+
+shap_11_to_15 <- kernelshap(fit_rf2, testNew3[11:15,1:65], bg_X = testNew3) %>% shapviz()
+saveRDS(shap_11_to_15,"./shaps/shap_11_to_15.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_11_to_15$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_11_to_15$yes$S)
+
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_11_to_15$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_11_to_15$no$S)
+
+shap_16_to_20 <- kernelshap(fit_rf2, testNew3[16:20,1:65], bg_X = testNew3) %>% shapviz()
+saveRDS(shap_16_to_20,"./shaps/shap_16_to_20.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_16_to_20$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_16_to_20$yes$S)
+
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_16_to_20$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_16_to_20$no$S)
+
+shap_21_to_25 <- kernelshap(fit_rf2, testNew3[21:25,1:65], bg_X = testNew3) %>% shapviz()
+saveRDS(shap_21_to_25,"./shaps/shap_21_to_25.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_21_to_25$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_21_to_25$yes$S)
+
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_21_to_25$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_21_to_25$no$S)
+
+shap_26_to_30 <- kernelshap(fit_rf2, testNew3[26:30,1:65], bg_X = testNew3) %>% shapviz()
+saveRDS(shap_26_to_30,"./shaps/shap_26_to_30.rds")
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_26_to_30$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_26_to_30$yes$S)
+
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_26_to_30$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_26_to_30$no$S)
+```
+```{r}
+sv_importance(shap_mix$yes, kind = "beeswarm")
+```
+
+```{r}
+shap_mix = shap_1_to_5
+
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_6_to_10$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_6_to_10$yes$S)
+
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_6_to_10$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_6_to_10$no$S)
+
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_11_to_15$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_11_to_15$yes$S)
+
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_11_to_15$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_11_to_15$no$S)
+
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_16_to_20$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_16_to_20$yes$S)
+
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_16_to_20$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_16_to_20$no$S)
+
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_21_to_25$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_21_to_25$yes$S)
+
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_21_to_25$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_21_to_25$no$S)
+
+shap_mix$yes$X <- rbind(shap_mix$yes$X, shap_26_to_30$yes$X)
+shap_mix$yes$S <- rbind(shap_mix$yes$S, shap_26_to_30$yes$S)
+
+shap_mix$no$X <- rbind(shap_mix$no$X, shap_26_to_30$no$X)
+shap_mix$no$S <- rbind(shap_mix$no$S, shap_26_to_30$no$S)
+
+sv_importance(shap_mix$yes, kind = "beeswarm", max_display = 40L,)
+```
+
+
+
+
+

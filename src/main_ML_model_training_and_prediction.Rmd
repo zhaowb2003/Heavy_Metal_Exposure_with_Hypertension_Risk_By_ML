@@ -1,0 +1,370 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# 训练note
+
+## 前提与导库
+
+这个是导入dataset的R
+
+```{r}
+
+# 导入数据集
+
+library(readr)
+testNew <- read_csv("testNew.csv", col_types = cols(ID = col_skip(), 
+    PATID = col_skip(),DBP =col_skip(),SBP = col_skip(),  Age = col_integer(), 
+    Gender = readr::col_factor(levels = c("man", 
+        "woman")), RACE = readr::col_factor(levels = c("Hans", 
+        "Minority")), MARRIAGE = readr::col_factor(levels = c("noMarry", 
+        "Married", "coupleDied", "marryBroken", 
+        "Others")), EDUCATION = col_integer(), 
+    INCOME = col_integer(), JOB = readr::col_factor(levels = c("nongMin", 
+        "liTuiXiu", "gongRen", "jiaWu", "xingZheng", 
+        "siYingYeZhu", "jiShu", "xiaoShou", 
+        "xiaGang", "qiTa")), SMOKING = readr::col_factor(levels = c("yes", 
+        "no", "again")), DRINKING = readr::col_factor(levels = c("yes", 
+        "no", "again")), EXERCISE = readr::col_factor(levels = c("yes", 
+        "no")), HeightPressureIS = readr::col_factor(levels = c("yes", 
+        "no"))))
+View(testNew)
+
+
+testNewNum <- read_csv("testNewNum.csv", 
+    col_types = cols(ID = col_skip(), DBP =col_skip(),SBP = col_skip(),PATID = col_skip(), 
+        HeightPressureIS = readr::col_factor(levels = c("yes",
+            "no"))))
+View(testNewNum)
+
+library(readr)
+testdatasets <- read_csv("testdataset.csv", 
+    col_types = cols(SBP = col_skip(), DBP = col_skip()))
+testdataset <- na.omit(testdatasets)
+View(testdataset)
+
+```
+
+### 导入库的的R
+
+```{r}
+# 导入库
+suppressPackageStartupMessages(library(parsnip))
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(tidymodels))
+suppressPackageStartupMessages(library(vip))
+tidymodels_prefer()
+
+```
+
+这个是分割dataset的R
+
+```{r}
+# 分割数据
+
+split_pbp <- initial_split(testNew, 0.75, strata = HeightPressureIS)
+
+train_data <- training(split_pbp)
+test_data <- testing(split_pbp)
+
+pbp_rec <- recipe(HeightPressureIS ~ ., data = train_data)  %>%
+  step_corr(all_numeric(), threshold = 0.7) %>% 
+  step_center(all_numeric()) %>%
+  step_zv(all_predictors())
+metricsets <- metric_set(accuracy, mcc, f_meas, j_index)
+
+split_pbpNum <- initial_split(testNewNum, 0.75, strata = HeightPressureIS)
+
+train_dataNum <- training(split_pbpNum)
+test_dataNum <- testing(split_pbpNum)
+
+pbp_recNum <- recipe(HeightPressureIS ~ ., data = train_dataNum)  %>%
+  step_corr(all_numeric(), threshold = 0.7) %>%
+  step_center(all_numeric()) %>%
+  step_zv(all_predictors())
+
+split_pbpNumTarget <- initial_split(testdataset, 0.75, strata = HeightPressureIS)
+
+train_dataNumTarget <- training(split_pbpNumTarget)
+test_dataNumTarget <- testing(split_pbpNumTarget)
+
+pbp_recNumTarget <- recipe(HeightPressureIS ~ ., data = train_dataNumTarget)  %>%
+  step_corr(all_numeric(), threshold = 0.7) %>%
+  step_center(all_numeric()) %>%
+  step_zv(all_predictors())
+  step_normalize(all_numeric_predictors())
+```
+
+## 训练开始
+
+### glm模型
+
+训练glm的R
+
+```{r}
+lm_spec <- logistic_reg(mode = "classification", engine = "glm")
+lm_wflow <- workflow() %>%
+  add_recipe(pbp_rec) %>%
+  add_model(lm_spec)
+
+fit_lm <- lm_wflow %>% fit(data = train_data)
+pred_lm <- select(test_data, HeightPressureIS) %>%
+  bind_cols(predict(fit_lm, test_data, type = "prob")) %>%
+  bind_cols(predict(fit_lm, test_data))
+
+pred_lm
+saveRDS(fit_lm, file = "model/fit_glm.rds") #保存 rds
+
+```
+
+#### 预测glm的R
+
+```{r}
+metricsets <- metric_set(accuracy, mcc, f_meas, j_index)
+
+pred_lm %>% metricsets(truth = HeightPressureIS, estimate = .pred_class)
+pred_lm %>% roc_auc(truth = HeightPressureIS, .pred_yes)
+pred_lm %>% roc_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_lm %>% pr_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_lm %>% gain_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_lm %>% lift_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+fit_lm %>% extract_fit_parsnip() %>% vip(num_features = 10)
+```
+
+### Knn模型
+
+训练knn的R
+
+```{r}
+knn_spec <- nearest_neighbor(mode = "classification", engine = "kknn")
+knn_wflow <- workflow() %>% add_recipe(pbp_rec) %>% add_model(knn_spec)
+library(kknn)
+fit_knn <- knn_wflow %>% fit(train_data)
+saveRDS(fit_knn,file = "model/fit_knn.rds")
+pred_knn <- test_data %>% select(HeightPressureIS) %>%
+  bind_cols(predict(fit_knn, test_data, type = "prob")) %>%
+  bind_cols(predict(fit_knn, test_data, type = "class"))
+```
+
+#### 预测knn的R
+
+```{r}
+metricsets <- metric_set(accuracy, mcc, f_meas, j_index)
+
+pred_knn %>% metricsets(truth = HeightPressureIS, estimate = .pred_class)
+pred_knn %>% roc_auc(HeightPressureIS, .pred_yes)
+pred_knn %>% roc_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_knn %>% pr_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_knn %>% gain_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_knn %>% lift_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+```
+
+### randomforest模型
+
+训练rf的R
+
+```{r}
+rf_spec <- rand_forest(mode = "classification") %>%
+  set_engine("ranger", importance = "permutation")
+rf_wflow <- workflow() %>% add_recipe(pbp_rec) %>% add_model(rf_spec)
+fit_rf <- rf_wflow %>% fit(train_data)
+saveRDS(fit_rf, file = "model/fit_rf.rds")
+pred_rf <- test_data %>% select(HeightPressureIS) %>%
+  bind_cols(predict(fit_rf, test_data, type = "prob")) %>%
+  bind_cols(predict(fit_rf, test_data, type = "class"))
+```
+
+#### 测试rf的R
+
+```{r}
+pred_rf %>% metricsets(truth = HeightPressureIS, estimate = .pred_class)
+pred_rf %>% conf_mat(truth = HeightPressureIS, estimate = .pred_class)
+pred_rf %>% roc_auc(HeightPressureIS, .pred_yes)
+pred_rf %>% roc_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_rf %>% pr_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_rf %>% gain_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_rf %>% lift_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+library(vip)
+fit_rf %>% extract_fit_parsnip() %>% vip(num_features = 10)
+```
+
+### 决策树模型dt
+
+```{r}
+tree_spec <- decision_tree(mode = "classification", engine = "rpart")
+tree_wflow <- workflow() %>% add_recipe(pbp_rec) %>% add_model(tree_spec)
+fit_tree <- tree_wflow %>% fit(train_data)
+saveRDS(fit_tree, file = "model/fit_tree.rds")
+pred_tree <- test_data %>% select(HeightPressureIS) %>%
+  bind_cols(predict(fit_tree, test_data, type = "prob")) %>%
+  bind_cols(predict(fit_tree, test_data, type = "class"))
+```
+#### 测试决策树模型
+```{r}
+pred_tree %>% roc_auc(HeightPressureIS, .pred_yes)
+
+pred_tree %>% metricsets(truth = HeightPressureIS, estimate = .pred_class)
+pred_tree %>% roc_auc(HeightPressureIS, .pred_yes)
+pred_tree %>% roc_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_tree %>% pr_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_tree %>% gain_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_tree %>% lift_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+fit_tree %>% extract_fit_parsnip() %>% vip(num_features = 10)
+```
+
+### xgboost模型
+
+训练xgboost的R
+
+```{r}
+# boost_tree
+xgboost_spec <- boost_tree(mode = "classification", engine = "xgboost")
+xgboost_wflow <- workflow() %>%
+  add_recipe(pbp_recNum) %>%
+  add_model(xgboost_spec)
+
+fit_xgboost <- xgboost_wflow %>% fit(train_dataNum)
+
+saveRDS(fit_xgboost, file = "model/fit_xgboost.rds")
+
+pred_xgboost <- test_dataNum %>% select(HeightPressureIS) %>%
+  bind_cols(predict(fit_xgboost, test_dataNum, type = "prob")) %>%
+  bind_cols(predict(fit_xgboost, test_dataNum, type = "class"))
+```
+
+#### 测试xgboost的R
+
+```{r}
+pred_xgboost %>% roc_auc(HeightPressureIS, .pred_yes)
+
+pred_xgboost %>% metricsets(truth = HeightPressureIS, estimate = .pred_class)
+pred_xgboost %>% roc_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_xgboost %>% pr_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_xgboost %>% gain_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_xgboost %>% lift_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+fit_xgboost %>% extract_fit_parsnip() %>% vip(num_features = 10)
+```
+
+### svm_linear 模型
+
+```{r}
+library(LiblineaR)
+
+svmL_spec <- svm_linear(mode = "classification",engine = "kernlab")
+svmL_wflow <- workflow() %>% add_recipe(pbp_recNum) %>% add_model(svmL_spec)
+fit_svmL <- svmL_wflow %>% fit(train_dataNum)
+saveRDS(fit_svmL,file = "model/fit_svm_linear.rds")
+pred_svmL <- test_dataNum %>% select(HeightPressureIS) %>%
+  bind_cols(predict(fit_svmL, test_dataNum, type = "prob")) %>%
+  bind_cols(predict(fit_svmL, test_dataNum, type = "class"))
+```
+
+#### 预测svm_linear的R
+
+```{r}
+pred_svmL %>% roc_auc(HeightPressureIS, .pred_yes)
+pred_svmL %>% metricsets(truth = HeightPressureIS, estimate = .pred_class)
+pred_svmL %>% roc_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_svmL %>% pr_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_svmL %>% gain_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_svmL %>% lift_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+
+```
+
+### 贝叶斯加性回归树 （BART） 模型
+
+```{r}
+library(dbarts)
+BART_spec <- bart(mode = "classification",engine = "dbarts")
+BART_wflow <- workflow() %>% add_recipe(pbp_rec) %>% add_model(BART_spec)
+fit_BART <- BART_wflow %>% fit(train_data)
+saveRDS(fit_BART,file = "model/fit_BART.rds")
+pred_BART <- test_data %>% select(HeightPressureIS) %>%
+  bind_cols(predict(fit_BART, test_data, type = "prob")) %>%
+  bind_cols(predict(fit_BART, test_data, type = "class"))
+```
+
+#### 预测BART的R
+
+```{r}
+pred_BART %>% roc_auc(HeightPressureIS, .pred_yes)
+pred_BART %>% metricsets(truth = HeightPressureIS, estimate = .pred_class)
+pred_BART %>% roc_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_BART %>% pr_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_BART %>% gain_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_BART %>% lift_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+```
+
+### 朴素贝叶斯模型
+
+```{r}
+library(discrim)
+Bayes_spec <- naive_Bayes(mode = "classification",engine = "klaR")
+Bayes_wflow <- workflow() %>% add_recipe(pbp_rec) %>% add_model(Bayes_spec)
+fit_Bayes <- Bayes_wflow %>% fit(train_data)
+saveRDS(fit_Bayes, file = "model/fit_Bayes.rds")
+pred_Bayes <- test_data %>% select(HeightPressureIS) %>%
+  bind_cols(predict(fit_Bayes, test_data, type = "prob")) %>%
+  bind_cols(predict(fit_Bayes, test_data, type = "class"))
+```
+
+#### 预测朴素贝叶斯模型的R
+
+```{r}
+pred_Bayes %>% roc_auc(HeightPressureIS, .pred_yes)
+pred_Bayes %>% metricsets(truth = HeightPressureIS, estimate = .pred_class)
+pred_Bayes %>% roc_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_Bayes %>% pr_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_Bayes %>% gain_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_Bayes %>% lift_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+```
+
+### 多元自适应回归样条曲线 （MARS）
+
+```{r}
+library(earth)
+mars_spec <- mars(mode = "classification", engine = "earth")
+mars_wflow <- workflow() %>% add_recipe(pbp_rec) %>% add_model(mars_spec)
+
+fit_mars <- mars_wflow %>% fit(train_data)
+
+saveRDS(fit_mars, file = "model/fit_mars.rds")
+
+pred_mars <- test_data %>% select(HeightPressureIS) %>%
+  bind_cols(predict(fit_mars, test_data, type = "prob")) %>%
+  bind_cols(predict(fit_mars, test_data, type = "class"))
+```
+
+#### 预测多元自适应回归样条曲线 （MARS）的R
+
+```{r}
+pred_mars %>% roc_auc(HeightPressureIS, .pred_yes)
+pred_mars %>% metricsets(truth = HeightPressureIS, estimate = .pred_class)
+pred_mars %>% roc_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_mars %>% pr_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_mars %>% gain_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+pred_mars %>% lift_curve(truth = HeightPressureIS, .pred_yes) %>% autoplot()
+library(vip)
+fit_mars %>% extract_fit_parsnip() %>% vip(num_features = 10)
+```
+
+## pdp 1D
+```{r}
+library(DALEXtra)
+
+df_new <- train_data[, -42]
+rf_explainer <- explain_tidymodels(fit_rf,
+                                   data = train_data,
+                                   y = train_data$HeightPressureIS)
+pdp_all <- model_profile(rf_explainer)
+```
+
+
+
+
+
+
+
+
+
